@@ -34,7 +34,10 @@ int main() {
     uint32_t expected_seq = 0;
     Packet recv_pkt, ack_pkt;
     TransportStats stats = {0};
-    char last_event[128] = "Server initialized and waiting for client packets...";
+    char last_event[128] = "Server ready. Waiting for SYN file transfer...";
+
+    FILE *out_fp = NULL;
+    char out_filename[150] = {0};
 
     render_server_dashboard(&stats, expected_seq, last_event);
 
@@ -43,9 +46,7 @@ int main() {
                              (struct sockaddr *)&client_addr, &addr_len);
         if (bytes <= 0) continue;
 
-        stats.total_sent++; // Track total incoming packets
-
-        // Verify Checksum
+        stats.total_sent++;
         uint16_t recv_checksum = recv_pkt.header.checksum;
         recv_pkt.header.checksum = 0;
         uint16_t calc_checksum = calculate_checksum(&recv_pkt, sizeof(MiniTCPHeader) + recv_pkt.header.length);
@@ -58,16 +59,37 @@ int main() {
 
         if (recv_pkt.header.seq_num == expected_seq) {
             stats.total_acked++;
-            snprintf(last_event, sizeof(last_event), "Accepted IN-ORDER seq %u ('%s')", 
-                     recv_pkt.header.seq_num, recv_pkt.payload);
-            
+
+            // 1. Handle SYN Handshake (Open Output File)
+            if (recv_pkt.header.flags & FLAG_SYN) {
+                FileMetadata *meta = (FileMetadata *)recv_pkt.payload;
+                snprintf(out_filename, sizeof(out_filename), "received_%s", meta->filename);
+                out_fp = fopen(out_filename, "wb");
+                snprintf(last_event, sizeof(last_event), "SYN: Receiving file '%s' (%u bytes)", 
+                         out_filename, meta->file_size);
+            } 
+            // 2. Handle DATA Packets (Write Chunk to Disk)
+            else if (recv_pkt.header.flags & FLAG_DATA && out_fp) {
+                fwrite(recv_pkt.payload, 1, recv_pkt.header.length, out_fp);
+                snprintf(last_event, sizeof(last_event), "Written chunk seq %u (%u bytes)", 
+                         recv_pkt.header.seq_num, recv_pkt.header.length);
+            } 
+            // 3. Handle FIN Handshake (Close File)
+            else if (recv_pkt.header.flags & FLAG_FIN) {
+                if (out_fp) fclose(out_fp);
+                out_fp = NULL;
+                snprintf(last_event, sizeof(last_event), "FIN: File '%s' successfully saved to disk!", out_filename);
+            }
+
+            // Send Cumulative ACK back to sender
             build_packet(&ack_pkt, 0, expected_seq, FLAG_ACK, NULL, 0);
+            ack_pkt.header.send_timestamp_ms = recv_pkt.header.send_timestamp_ms; // Echo timestamp for RTT
             unreliable_sendto(sockfd, &ack_pkt, sizeof(MiniTCPHeader), 0,
                               (struct sockaddr *)&client_addr, addr_len, NULL);
             
             expected_seq++;
         } else {
-            stats.total_dropped++; // Track out-of-order discards
+            stats.total_dropped++;
             snprintf(last_event, sizeof(last_event), "OUT-OF-ORDER (got %u, expected %u). Re-ACKing %d",
                      recv_pkt.header.seq_num, expected_seq, (int)expected_seq - 1);
             
@@ -80,6 +102,7 @@ int main() {
         render_server_dashboard(&stats, expected_seq, last_event);
     }
 
+    if (out_fp) fclose(out_fp);
     closesocket(sockfd);
     WSACleanup();
     return 0;

@@ -1,11 +1,11 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -Iinclude -g
+CFLAGS = -Wall -Wextra -Iinclude -g -D__USE_MINGW_ANSI_STDIO=1
 LDFLAGS = -lws2_32
 SRC_DIR = src
 OBJ_DIR = obj
 
-SOURCES = $(SRC_DIR)/packet.c $(SRC_DIR)/network.c $(SRC_DIR)/dashboard.c
-OBJECTS = $(OBJ_DIR)/packet.o $(OBJ_DIR)/network.o $(OBJ_DIR)/dashboard.o
+SOURCES = $(SRC_DIR)/packet.c $(SRC_DIR)/network.c $(SRC_DIR)/dashboard.c $(SRC_DIR)/rtt.c
+OBJECTS = $(OBJ_DIR)/packet.o $(OBJ_DIR)/network.o $(OBJ_DIR)/dashboard.o $(OBJ_DIR)/rtt.o
 
 all: create_dirs server.exe client.exe
 
@@ -27,3 +27,5 @@ clean:
 	@if exist "client.exe" del /q client.exe
 
 .PHONY: all create_dirs clean
+
+
