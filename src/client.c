@@ -54,6 +54,7 @@ PacketState *pkt_states = (PacketState *)calloc(total_packets, sizeof(PacketStat
 
 // 1. Build SYN Packet (seq 0)
 FileMetadata meta;
+memset(&meta, 0, sizeof(FileMetadata));
 snprintf(meta.filename, sizeof(meta.filename), "%s", filepath);
 meta.file_size = (uint32_t)file_size;
 build_packet(&window_buffer[0], 0, 0, FLAG_SYN, (const char *)&meta, sizeof(FileMetadata));
@@ -62,6 +63,7 @@ pkt_states[0] = PKT_WAIT;
 // 2. Build DATA Packets (seq 1 to data_packets)
 for (uint32_t i = 1; i <= data_packets; i++) {
     char chunk[PAYLOAD_SIZE];
+    memset(chunk, 0, PAYLOAD_SIZE);
     size_t bytes_read = fread(chunk, 1, PAYLOAD_SIZE, fp);
     build_packet(&window_buffer[i], i, 0, FLAG_DATA, chunk, (uint16_t)bytes_read);
     pkt_states[i] = PKT_WAIT;
@@ -88,7 +90,12 @@ while (base < total_packets) {
     // Send packets within sliding window [base, base + WINDOW_SIZE)
     while (next_seq_num < base + WINDOW_SIZE && next_seq_num < total_packets) {
         pkt_states[next_seq_num] = PKT_SENT;
+        
+        // --- FIX: Recalculate Checksum after modifying timestamp ---
         window_buffer[next_seq_num].header.send_timestamp_ms = get_current_time_ms();
+        window_buffer[next_seq_num].header.checksum = 0; 
+        window_buffer[next_seq_num].header.checksum = calculate_checksum(&window_buffer[next_seq_num], 
+                                                      sizeof(MiniTCPHeader) + window_buffer[next_seq_num].header.length);
 
         snprintf(last_event, sizeof(last_event), "Send seq %u (flags: 0x%x, RTO: %dms)", 
                  next_seq_num, window_buffer[next_seq_num].header.flags, rtt.rto_ms);
@@ -127,7 +134,12 @@ while (base < total_packets) {
             render_client_dashboard(&stats, base, next_seq_num, pkt_states, total_packets, last_event);
             Sleep(80);
 
+            // --- FIX: Recalculate Checksum for retransmissions too ---
             window_buffer[i].header.send_timestamp_ms = get_current_time_ms();
+            window_buffer[i].header.checksum = 0; 
+            window_buffer[i].header.checksum = calculate_checksum(&window_buffer[i], 
+                                                          sizeof(MiniTCPHeader) + window_buffer[i].header.length);
+
             unreliable_sendto(sockfd, &window_buffer[i], 
                               sizeof(MiniTCPHeader) + window_buffer[i].header.length,
                               0, (struct sockaddr *)&server_addr, addr_len, &stats);
@@ -143,7 +155,6 @@ while (base < total_packets) {
             uint64_t sample_rtt = now_ms - ack_pkt.header.send_timestamp_ms;
             update_rto(&rtt, sample_rtt);
 
-            // FIX: Cast sample_rtt to uint32_t and use %u to bypass MinGW 64-bit formatting quirks
             snprintf(last_event, sizeof(last_event), "ACK seq %u received (RTT: %ums | New RTO: %dms)", 
                      ack_pkt.header.ack_num, (uint32_t)sample_rtt, rtt.rto_ms);
 
